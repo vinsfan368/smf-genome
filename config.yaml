@@ -1,0 +1,12 @@
+samples: samples.tsv
+
+# Bismark genome index directory (BT2)
+# Substitute $OAK and $USER manually, or set via env before running:
+#   snakemake --config bismark_index=$OAK/$USER/hg38_refs/hg38-male-bismark-indexes-BT2
+bismark_index: "/oak/stanford/groups/wjg/vinsfan/hg38_refs/hg38-male-bismark-indexes-BT2"
+
+# Full path to deduplicate_bismark binary
+dedup_bin: "/Users/vinsfan/miniforge3/envs/smf_py3_v7/bin/deduplicate_bismark"
+
+trim_cores: 4
+bismark_parallel: 4   # total threads used ≈ bismark_parallel × 4
