@@ -68,11 +68,56 @@ snakemake --forcerun dedup -c16
 
 ## Analysis
 
+### Deamination metaplots
+
+`scripts/metaplot_around_bed.py` — per-position deamination fraction around
+the centres of BED-like regions, from coordinate-sorted, indexed minibwa
+`--meth` or Bismark BAMs (MD tags required).
+
+```bash
+python scripts/metaplot_around_bed.py aligned/*.bam \
+    --regions K562-CTCF-ENCFF119XFJ-vs-FIMO-intersection2.gz --out-dir metaplots
+# zoomed in, with a sequence logo from the reference underneath
+python scripts/metaplot_around_bed.py aligned/*.bam \
+    --regions K562-CTCF-ENCFF119XFJ-vs-FIMO-intersection2.gz --out-dir metaplots \
+    --half-width 20 --logo
+```
+
+| Option | Description |
+|---|---|
+| `--half-width` | bp either side of each region centre to scan and plot (default 500) |
+| `--logo` | add a sequence-logo subplot (one FASTA pass over every region) |
+| `--ylim LO HI` | fix the y-axis range (default: auto-scale) |
+| `--fasta` | reference FASTA for `--logo` (default: hg38-male) |
+| `--recompute` | ignore the cached `.npz` |
+
+- Plots are in motif orientation: `-` regions are reversed (and their logo
+  reverse-complemented), so x runs 5'→3' along each region's strand.
+- Mates are merged per molecule (`read_utils.merge_mates`, amplicon-smf
+  rules), so bases covered by both mates count once.
+- Converted strand: Bismark `XG` tag if present, else FLAG + R1/R2
+  (FLAG 99/147 → C→T, 83/163 → G→A).
+- Region layouts (4/6/7/11/22 columns) are documented in `regions.py`.
+
+### Sequence logos
+
+```bash
+python sequence_logos.py REGIONS [...] --out-dir logos [--by-strand] [--half-window 10]
+python scripts/plot_strand_split_logos.py REGIONS [...] --out-dir logos [--half-window 15]
+```
+
+`plot_strand_split_logos.py` draws `+` / `-` / pooled logos side by side and
+reports the best `+`/`-` lag, to catch BEDs whose centre is off by a uniform
+offset. `motif_logo.py` has the subplot helper the metaplot uses.
+
+### Other
+
 `scripts/genome_aligns.py` — plots methylation profiles around CTCF motifs
 and per-read conversion patterns. Set `BAM` and `regions` paths at the top,
 then run directly.
 
-Core per-read logic lives in `read_utils.py` (importable, tested).
+Core per-read logic lives in `read_utils.py`, region parsing in `regions.py`
+(importable, tested).
 
 ## Tests
 

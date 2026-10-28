@@ -1,8 +1,8 @@
 """
 read_utils.py — core per-read processing functions for SMF genome-wide analysis.
 
-Extracted from genome_aligns.py to allow unit testing without a live BAM file.
-Import these in genome_aligns.py rather than duplicating logic.
+Extracted from genome_aligns.py and metaplot_around_bed.py to allow unit testing
+without a live BAM file. Import these in scripts rather than duplicating logic.
 """
 
 import numpy as np
@@ -148,3 +148,108 @@ def minimal_unique_prefix_length(seqs, max_cycles):
         if len({s[:length] for s in seqs}) == len(seqs):
             return length
     return max_len
+
+
+# ---------------------------------------------------------------------------
+# MD-based conversion calls (minibwa --meth / Bismark), used by the metaplots
+# ---------------------------------------------------------------------------
+
+def conversion_strand(read):
+    """Which converted strand a read's bases come from, in BAM (reference) orientation.
+
+    'OT': conversions show as ref C -> read T.  'OB': ref G -> read A.
+
+    Bismark's XG tag (genome conversion, CT or GA) is used when present; it is
+    set identically on both mates and also covers CTOT/CTOB in non-directional
+    runs. Otherwise (minibwa --meth, directional) strand comes from the FLAG:
+    single-end reads and R1 are OB when reverse; R2 is the opposite, because R2
+    is sequenced from the complement of the same original strand.
+    FLAG 99/147 -> OT, 83/163 -> OB, 0 -> OT, 16 -> OB.
+    """
+    if read.has_tag('XG'):
+        return 'OT' if read.get_tag('XG') == 'CT' else 'OB'
+    if read.is_paired and read.is_read2:
+        return 'OT' if read.is_reverse else 'OB'
+    return 'OB' if read.is_reverse else 'OT'
+
+
+def project_to_window(read, win_start, win_len):
+    """Place a read's aligned bases on window coordinates [win_start, win_start + win_len).
+
+    Soft clips and insertions are skipped (matches_only); deletions and
+    uncovered positions are 'N' with quality 0. Reference bases come from the
+    read's MD tag, so no FASTA is needed.
+
+    Returns
+    -------
+    (bases, quals, refs) : arrays of shape (win_len,), dtypes 'S1', int, 'S1'
+    """
+    bases = np.full(win_len, b'N', dtype='S1')
+    quals = np.zeros(win_len, dtype=int)
+    refs = np.full(win_len, b'N', dtype='S1')
+    pairs = read.get_aligned_pairs(matches_only=True, with_seq=True)
+    if not pairs:
+        return bases, quals, refs
+    qpos, rpos, rbase = zip(*pairs)
+    qpos = np.asarray(qpos, dtype=int)
+    rel = np.asarray(rpos, dtype=int) - win_start
+    keep = (rel >= 0) & (rel < win_len)
+    seq = np.frombuffer(read.query_sequence.encode('ascii'), dtype='S1')
+    bases[rel[keep]] = seq[qpos[keep]]
+    q = read.query_qualities
+    quals[rel[keep]] = np.asarray(q, dtype=int)[qpos[keep]] if q is not None else 0
+    refs[rel[keep]] = np.frombuffer(''.join(rbase).upper().encode('ascii'), dtype='S1')[keep]
+    return bases, quals, refs
+
+
+def merge_mates(mate1, mate2=None):
+    """Merge one molecule's mates in reference coordinates (amplicon-smf
+    vinsfan368 fork's merge_mates rules).
+
+    Each mate is a (bases, quals, refs) tuple from project_to_window.
+      1. Positions no mate covers are 'N'.
+      2. Covered by one mate with base quality 0 -> 'N'.
+      3. Covered by one mate with quality > 0 -> that base.
+      4. Overlap, different qualities -> the higher-quality base.
+      5. Overlap, same quality, same base -> that base.
+      6. Overlap, same quality, different bases -> 'N'.
+    With mate2=None (single-end, or the mate lies outside the window), only
+    rules 1-3 apply.
+
+    Returns
+    -------
+    (bases, refs) : arrays of shape (win_len,), dtype 'S1'
+    """
+    s0, q0, r0 = mate1
+    if mate2 is None:
+        return np.where(q0 > 0, s0, b'N'), r0
+    s1, q1, r1 = mate2
+    merged = np.full(s0.shape, b'N', dtype='S1')
+    merged[q0 > q1] = s0[q0 > q1]
+    merged[q1 > q0] = s1[q1 > q0]
+    same = (q0 == q1) & (s0 == s1) & (q0 > 0)
+    merged[same] = s0[same]
+    refs = np.where(r0 != b'N', r0, r1)
+    return merged, refs
+
+
+def conversion_calls(strand, refs, bases):
+    """Informative and converted positions for one molecule.
+
+    OT: candidates are ref C, read C (retained) or T (converted).
+    OB: candidates are ref G, read G (retained) or A (converted).
+    Any other read base at a candidate (a mismatch, or 'N') is not informative.
+
+    Returns
+    -------
+    (covered, converted) : boolean arrays
+    """
+    if strand == 'OB':
+        candidate = refs == b'G'
+        converted = candidate & (bases == b'A')
+        retained = candidate & (bases == b'G')
+    else:
+        candidate = refs == b'C'
+        converted = candidate & (bases == b'T')
+        retained = candidate & (bases == b'C')
+    return converted | retained, converted
